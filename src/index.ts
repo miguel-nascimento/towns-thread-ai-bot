@@ -42,29 +42,29 @@ bot.onMentioned(async (h, { message, userId, eventId, channelId }) => {
 bot.onThreadMessage(async (h, { channelId, threadId, userId, message, eventId }) => {
   console.log(`🧵 thread message: user ${shortId(userId)} sent message:`, message)
   
-  // First add the message
-  await addMessage(eventId, threadId, userId, message)
-  
   // Check if thread exists, if not create it from the first message
   const exists = await threadExists(threadId)
   if (!exists) {
     console.log(`Creating thread ${threadId} from first message`)
     await createThreadFromFirstMessage(threadId)
   }
+  
+  // Add the message after ensuring thread exists
+  await addMessage(eventId, threadId, userId, message)
 })
 
 bot.onMentionedInThread(async (h, { channelId, threadId, userId, message, eventId }) => {
   console.log(`📢 mentioned in thread: user ${shortId(userId)} mentioned bot:`, message)
 
-  // First add the message
-  await addMessage(eventId, threadId, userId, message)
-  
   // Check if thread exists, if not create it from the first message
   const exists = await threadExists(threadId)
   if (!exists) {
     console.log(`Creating thread ${threadId} from first message`)
     await createThreadFromFirstMessage(threadId)
   }
+
+  // Add the message after ensuring thread exists
+  await addMessage(eventId, threadId, userId, message)
   
   const context = await getContext(threadId)
   if (!context) {
