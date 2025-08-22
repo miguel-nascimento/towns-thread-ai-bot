@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server'
 import { createServer } from 'node:http2'
 import { Hono } from 'hono'
 import { logger } from 'hono/logger'
-import { initDatabase, createThread, addMessage, getContext, threadExists, createThreadFromFirstMessage, type Context } from './db.js'
+import { initDatabase, addMessage, getContext, threadExists, createThreadFromFirstMessage, type Context } from './db.js'
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -23,10 +23,9 @@ bot.onMessage(async (h, { message, userId, eventId, channelId }) => {
 bot.onMentioned(async (h, { message, userId, eventId, channelId }) => {
   console.log(`📢 mentioned outside thread: user ${shortId(userId)} mentioned bot:`, message)
   
-  // Create new thread with this message
+  // Store message as thread starter
   const newThreadId = eventId
-  await createThread(newThreadId, eventId, userId, message)
-  await addMessage(eventId, newThreadId, userId, message)
+  await addMessage(eventId, newThreadId, userId, message, true)
   
   // Get context and generate response
   const context = await getContext(newThreadId)

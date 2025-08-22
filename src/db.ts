@@ -13,34 +13,17 @@ const client = createClient({
 
 export const initDatabase = async () => {
   await client.execute(`
-    CREATE TABLE IF NOT EXISTS threads (
-      thread_id TEXT PRIMARY KEY,
-      original_event_id TEXT NOT NULL,
-      initial_prompt TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `)
-
-  await client.execute(`
     CREATE TABLE IF NOT EXISTS messages (
       event_id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       message TEXT NOT NULL,
       is_thread_starter BOOLEAN DEFAULT FALSE,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (thread_id) REFERENCES threads(thread_id)
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `)
 }
 
-export const createThread = async (threadId: string, originalEventId: string, userId: string, initialPrompt: string) => {
-  await client.execute({
-    sql: 'INSERT INTO threads (thread_id, original_event_id, user_id, initial_prompt) VALUES (?, ?, ?, ?)',
-    args: [threadId, originalEventId, userId, initialPrompt],
-  })
-}
 
 export const addMessage = async (eventId: string, threadId: string, userId: string, message: string, isThreadStarter = false) => {
   await client.execute({
@@ -50,20 +33,21 @@ export const addMessage = async (eventId: string, threadId: string, userId: stri
 }
 
 export const getContext = async (threadId: string): Promise<Context | null> => {
-  const threadResult = await client.execute({
-    sql: 'SELECT * FROM threads WHERE thread_id = ?',
-    args: [threadId],
-  })
-
-  if (threadResult.rows.length === 0) {
-    return null
-  }
-
-  const thread = threadResult.rows[0]
+  // Get all messages for this thread
   const messagesResult = await client.execute({
     sql: 'SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC',
     args: [threadId],
   })
+
+  if (messagesResult.rows.length === 0) {
+    return null
+  }
+
+  // Find the thread starter message
+  const starterMessage = messagesResult.rows.find(row => row.is_thread_starter === 1)
+  if (!starterMessage) {
+    return null
+  }
 
   const conversation = messagesResult.rows.map(row => ({
     userId: row.user_id as string,
@@ -71,15 +55,15 @@ export const getContext = async (threadId: string): Promise<Context | null> => {
   }))
 
   return {
-    initialPrompt: thread.initial_prompt as string,
-    userId: thread.user_id as string,
+    initialPrompt: starterMessage.message as string,
+    userId: starterMessage.user_id as string,
     conversation,
   }
 }
 
 export const threadExists = async (threadId: string): Promise<boolean> => {
   const result = await client.execute({
-    sql: 'SELECT 1 FROM threads WHERE thread_id = ? LIMIT 1',
+    sql: 'SELECT 1 FROM messages WHERE thread_id = ? LIMIT 1',
     args: [threadId],
   })
   
@@ -111,14 +95,6 @@ export const createThreadFromFirstMessage = async (threadId: string) => {
   if (!firstMessage) {
     throw new Error(`No messages found for thread ${threadId}`)
   }
-  
-  // Create the thread record
-  await createThread(
-    threadId,
-    firstMessage.event_id as string,
-    firstMessage.user_id as string,
-    firstMessage.message as string
-  )
   
   // Update the original message's thread_id if it was stored with its own event_id as thread_id
   if (firstMessage.thread_id === firstMessage.event_id) {
