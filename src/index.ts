@@ -16,7 +16,8 @@ const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA_BASE64!, process.env
 
 bot.onMessage(async (h, { message, userId, eventId, channelId }) => {
   console.log(`💬 standalone message: user ${shortId(userId)} sent message:`, message)
-  // Just store the message, no thread creation for standalone messages
+  // Store standalone messages using their eventId as threadId, marked as thread starters
+  await addMessage(eventId, eventId, userId, message, true)
 })
 
 bot.onMentioned(async (h, { message, userId, eventId, channelId }) => {

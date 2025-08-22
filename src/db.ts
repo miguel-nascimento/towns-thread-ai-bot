@@ -28,6 +28,7 @@ export const initDatabase = async () => {
       thread_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       message TEXT NOT NULL,
+      is_thread_starter BOOLEAN DEFAULT FALSE,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (thread_id) REFERENCES threads(thread_id)
     )
@@ -41,10 +42,10 @@ export const createThread = async (threadId: string, originalEventId: string, us
   })
 }
 
-export const addMessage = async (eventId: string, threadId: string, userId: string, message: string) => {
+export const addMessage = async (eventId: string, threadId: string, userId: string, message: string, isThreadStarter = false) => {
   await client.execute({
-    sql: 'INSERT INTO messages (event_id, thread_id, user_id, message) VALUES (?, ?, ?, ?)',
-    args: [eventId, threadId, userId, message],
+    sql: 'INSERT INTO messages (event_id, thread_id, user_id, message, is_thread_starter) VALUES (?, ?, ?, ?, ?)',
+    args: [eventId, threadId, userId, message, isThreadStarter],
   })
 }
 
@@ -86,6 +87,17 @@ export const threadExists = async (threadId: string): Promise<boolean> => {
 }
 
 export const getFirstMessageOfThread = async (threadId: string) => {
+  // First try to find a message marked as thread starter with this event_id
+  const starterResult = await client.execute({
+    sql: 'SELECT * FROM messages WHERE event_id = ? AND is_thread_starter = true LIMIT 1',
+    args: [threadId],
+  })
+  
+  if (starterResult.rows.length > 0) {
+    return starterResult.rows[0]
+  }
+  
+  // Fallback: look for the first message in an existing thread
   const result = await client.execute({
     sql: 'SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC LIMIT 1',
     args: [threadId],
@@ -100,10 +112,19 @@ export const createThreadFromFirstMessage = async (threadId: string) => {
     throw new Error(`No messages found for thread ${threadId}`)
   }
   
+  // Create the thread record
   await createThread(
     threadId,
     firstMessage.event_id as string,
     firstMessage.user_id as string,
     firstMessage.message as string
   )
+  
+  // Update the original message's thread_id if it was stored with its own event_id as thread_id
+  if (firstMessage.thread_id === firstMessage.event_id) {
+    await client.execute({
+      sql: 'UPDATE messages SET thread_id = ? WHERE event_id = ?',
+      args: [threadId, firstMessage.event_id],
+    })
+  }
 }
