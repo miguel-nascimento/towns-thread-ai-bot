@@ -15,66 +15,114 @@ await initDatabase()
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA_BASE64!, process.env.JWT_SECRET!)
 
 bot.onMessage(async (h, { message, userId, eventId, channelId }) => {
-  console.log(`💬 standalone message: user ${shortId(userId)} sent message:`, message)
-  // Store standalone messages using their eventId as threadId, marked as thread starters
-  await addMessage(eventId, eventId, userId, message, true)
+  try {
+    console.log(`💬 standalone message: user ${shortId(userId)} sent message:`, message)
+    // Store standalone messages using their eventId as threadId, marked as thread starters
+    await addMessage(eventId, eventId, userId, message, true)
+  } catch (error) {
+    console.error('Error handling standalone message:', {
+      userId: shortId(userId),
+      eventId,
+      error: error instanceof Error ? error.message : String(error)
+    })
+  }
 })
 
 bot.onMentioned(async (h, { message, userId, eventId, channelId }) => {
-  console.log(`📢 mentioned outside thread: user ${shortId(userId)} mentioned bot:`, message)
-  
-  // Store message as thread starter
-  const newThreadId = eventId
-  await addMessage(eventId, newThreadId, userId, message, true)
-  
-  // Get context and generate response
-  const context = await getContext(newThreadId)
-  if (!context) {
-    console.log('Could not retrieve context for new thread')
-    return
-  }
+  try {
+    console.log(`📢 mentioned outside thread: user ${shortId(userId)} mentioned bot:`, message)
+    
+    // Store message as thread starter
+    const newThreadId = eventId
+    await addMessage(eventId, newThreadId, userId, message, true)
+    
+    // Get context and generate response
+    const context = await getContext(newThreadId)
+    if (!context) {
+      console.log('Could not retrieve context for new thread')
+      return
+    }
 
-  const answer = await ai(context, bot.botId)
-  const { eventId: botEventId } = await h.sendMessage(channelId, answer, { threadId: newThreadId })
-  await addMessage(botEventId, newThreadId, bot.botId, answer)
+    const answer = await ai(context, bot.botId)
+    const { eventId: botEventId } = await h.sendMessage(channelId, answer, { threadId: newThreadId })
+    await addMessage(botEventId, newThreadId, bot.botId, answer)
+  } catch (error) {
+    console.error('Error handling mention outside thread:', {
+      userId: shortId(userId),
+      eventId,
+      error: error instanceof Error ? error.message : String(error)
+    })
+    
+    try {
+      // Try to send error message to user
+      await h.sendMessage(channelId, "Oopsie, I can't find my magic hat that contains the answer for everything! My database seems to be taking a nap 😴", { threadId: eventId })
+    } catch (replyError) {
+      console.error('Failed to send error message:', replyError)
+    }
+  }
 })
 
 bot.onThreadMessage(async (h, { channelId, threadId, userId, message, eventId }) => {
-  console.log(`🧵 thread message: user ${shortId(userId)} sent message:`, message)
-  
-  // Check if thread exists, if not create it from the first message
-  const exists = await threadExists(threadId)
-  if (!exists) {
-    console.log(`Creating thread ${threadId} from first message`)
-    await createThreadFromFirstMessage(threadId)
+  try {
+    console.log(`🧵 thread message: user ${shortId(userId)} sent message:`, message)
+    
+    // Check if thread exists, if not create it from the first message
+    const exists = await threadExists(threadId)
+    if (!exists) {
+      console.log(`Creating thread ${threadId} from first message`)
+      await createThreadFromFirstMessage(threadId)
+    }
+    
+    // Add the message after ensuring thread exists
+    await addMessage(eventId, threadId, userId, message)
+  } catch (error) {
+    console.error('Error handling thread message:', {
+      userId: shortId(userId),
+      threadId,
+      eventId,
+      error: error instanceof Error ? error.message : String(error)
+    })
   }
-  
-  // Add the message after ensuring thread exists
-  await addMessage(eventId, threadId, userId, message)
 })
 
 bot.onMentionedInThread(async (h, { channelId, threadId, userId, message, eventId }) => {
-  console.log(`📢 mentioned in thread: user ${shortId(userId)} mentioned bot:`, message)
+  try {
+    console.log(`📢 mentioned in thread: user ${shortId(userId)} mentioned bot:`, message)
 
-  // Check if thread exists, if not create it from the first message
-  const exists = await threadExists(threadId)
-  if (!exists) {
-    console.log(`Creating thread ${threadId} from first message`)
-    await createThreadFromFirstMessage(threadId)
+    // Check if thread exists, if not create it from the first message
+    const exists = await threadExists(threadId)
+    if (!exists) {
+      console.log(`Creating thread ${threadId} from first message`)
+      await createThreadFromFirstMessage(threadId)
+    }
+
+    // Add the message after ensuring thread exists
+    await addMessage(eventId, threadId, userId, message)
+    
+    const context = await getContext(threadId)
+    if (!context) {
+      console.log('Could not retrieve context for thread')
+      return
+    }
+
+    const answer = await ai(context, bot.botId)
+    const { eventId: botEventId } = await h.sendMessage(channelId, answer, { threadId })
+    await addMessage(botEventId, threadId, bot.botId, answer)
+  } catch (error) {
+    console.error('Error handling mention in thread:', {
+      userId: shortId(userId),
+      threadId,
+      eventId,
+      error: error instanceof Error ? error.message : String(error)
+    })
+    
+    try {
+      // Try to send error message to user
+      await h.sendMessage(channelId, "Oopsie, I can't find my magic hat that contains the answer for everything! (gpt is down x.x)", { threadId })
+    } catch (replyError) {
+      console.error('Failed to send error message:', replyError)
+    }
   }
-
-  // Add the message after ensuring thread exists
-  await addMessage(eventId, threadId, userId, message)
-  
-  const context = await getContext(threadId)
-  if (!context) {
-    console.log('Could not retrieve context for thread')
-    return
-  }
-
-  const answer = await ai(context, bot.botId)
-  const { eventId: botEventId } = await h.sendMessage(channelId, answer, { threadId })
-  await addMessage(botEventId, threadId, bot.botId, answer)
 })
 
 
@@ -104,13 +152,21 @@ const buildContextMessage = (
 }
 
 const ai = async (context: Context, botId: string) => {
-  const messages = buildContextMessage(context, botId)
-  const chatCompletion = await openai.chat.completions.create({
-    messages: messages,
-    model: 'gpt-5-nano-2025-08-07'
-  })
+  try {
+    const messages = buildContextMessage(context, botId)
+    const chatCompletion = await openai.chat.completions.create({
+      messages: messages,
+      model: 'gpt-5-nano-2025-08-07'
+    })
 
-  return chatCompletion.choices[0].message.content ?? ''
+    return chatCompletion.choices[0].message.content ?? ''
+  } catch (error) {
+    console.error('OpenAI API error:', {
+      error: error instanceof Error ? error.message : String(error),
+      contextLength: context.conversation.length
+    })
+    throw error
+  }
 }
 const shortId = (id: string) => id.slice(0, 4) + '..' + id.slice(-4)
 
