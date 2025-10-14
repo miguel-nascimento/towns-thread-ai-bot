@@ -416,9 +416,10 @@ bot.onSlashCommand(
   async (handler, { channelId, threadId, createdAt }) => {
     const now = new Date();
     const ping = now.getTime() - createdAt.getTime();
+    const commit = process.env.RENDER_GIT_COMMIT || "dev";
     await handler.sendMessage(
       channelId,
-      `Hi, I'm the Wise Beaver. I can answer questions if you mention me or use the \`/ask\` command. (ping: ${ping}ms)`,
+      `Hi, I'm the Wise Beaver. I can answer questions if you mention me or use the \`/ask\` command. (ping: ${ping}ms, commit: ${commit})`,
       { threadId }
     );
   }
