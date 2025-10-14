@@ -1,7 +1,7 @@
 import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { messages } from "./schema.js";
-import { eq, asc, and } from "drizzle-orm";
+import { eq, asc, and, desc } from "drizzle-orm";
 
 export type Context = {
   initialPrompt: string;
@@ -19,23 +19,40 @@ const db = drizzle(client);
 export const addMessage = async (
   eventId: string,
   threadId: string,
+  channelId: string,
+  spaceId: string,
   userId: string,
   message: string,
+  createdAt: Date,
+  replyId?: string,
+  isMentioned?: boolean,
+  mentions?: Array<{ userId: string; displayName: string }>,
   isThreadStarter = false
 ) => {
   try {
     await db.insert(messages).values({
       eventId,
       threadId,
+      channelId,
+      spaceId,
       userId,
       message,
+      replyId,
+      isMentioned,
+      mentions,
       isThreadStarter,
+      createdAt,
     });
   } catch (error) {
     console.error("Failed to add message:", {
       eventId,
       threadId,
+      channelId,
+      spaceId,
       userId: userId.slice(0, 8) + "...",
+      replyId,
+      isMentioned,
+      mentionsCount: mentions?.length,
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
@@ -149,4 +166,52 @@ export const createThreadFromFirstMessage = async (threadId: string) => {
     });
     throw error;
   }
+};
+
+export const getLatestChannelMessages = async (
+  channelId: string,
+  limit: number = 10
+) => {
+  try {
+    const result = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.channelId, channelId))
+      .orderBy(desc(messages.createdAt))
+      .limit(limit);
+
+    return result.reverse();
+  } catch (error) {
+    console.error("Failed to get latest channel messages:", {
+      channelId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+};
+
+export const buildEnrichedContext = (
+  msgs: Array<typeof messages.$inferSelect>,
+  replyLookup: Map<string, string> = new Map()
+) => {
+  msgs.forEach((msg) => {
+    replyLookup.set(msg.eventId, msg.message);
+  });
+
+  return msgs.map((msg) => {
+    let enrichedContent = msg.message;
+
+    if (msg.replyId && replyLookup.has(msg.replyId)) {
+      enrichedContent = `[replying to: "${replyLookup
+        .get(msg.replyId)
+        ?.slice(0, 100)}..."] ${enrichedContent}`;
+    }
+
+    if (msg.mentions && msg.mentions.length > 0) {
+      const mentionList = msg.mentions.map((m) => m.displayName).join(", ");
+      enrichedContent = `[mentioned: ${mentionList}] ${enrichedContent}`;
+    }
+
+    return enrichedContent;
+  });
 };
