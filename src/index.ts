@@ -232,6 +232,19 @@ bot.onSlashCommand(
   }
 );
 
+bot.onSlashCommand(
+  "help",
+  async (handler, { channelId, threadId, createdAt }) => {
+    const now = new Date();
+    const ping = now.getTime() - createdAt.getTime();
+    await handler.sendMessage(
+      channelId,
+      `Hi, I'm the Wise Beaver. I can answer questions if you mention me or use the \`/ask\` command. (ping: ${ping}ms)`,
+      { threadId }
+    );
+  }
+);
+
 const { jwtMiddleware, handler } = await bot.start();
 
 const app = new Hono();
