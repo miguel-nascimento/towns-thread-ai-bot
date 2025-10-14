@@ -1,6 +1,6 @@
-import { generateText } from "ai";
+import { generateText, type ModelMessage } from "ai";
+import { openai } from "@ai-sdk/openai";
 import { makeTownsBot } from "@towns-protocol/bot";
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import commands from "./commands.js";
@@ -12,10 +12,6 @@ import {
   createThreadFromFirstMessage,
   type Context,
 } from "./db.js";
-
-const openrouter = createOpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY!,
-});
 
 const bot = await makeTownsBot(
   process.env.APP_PRIVATE_DATA!,
@@ -31,7 +27,7 @@ const buildContextMessage = (context: Context, botId: string) => {
   const messages = context.conversation.map((turn) => ({
     role: turn.userId === botId ? ("assistant" as const) : ("user" as const),
     content: turn.message,
-  }));
+  })) satisfies ModelMessage[];
 
   return { systemPrompt, messages };
 };
@@ -41,7 +37,7 @@ const ai = async (context: Context, botId: string) => {
     const { systemPrompt, messages } = buildContextMessage(context, botId);
 
     const { text } = await generateText({
-      model: openrouter("deepseek/deepseek-chat-v3.1:free"),
+      model: openai("gpt-5-nano"),
       system: systemPrompt,
       messages,
       temperature: 0,
