@@ -361,8 +361,13 @@ bot.onSlashCommand(
 
       console.log(`💬 /chat command: user ${shortId(userId)} asked:`, question);
 
-      const latestMessages = await getLatestChannelMessages(channelId, 10);
+      const latestMessages = await getLatestChannelMessages(channelId, 10, 50);
       const enrichedContents = buildEnrichedContext(latestMessages);
+
+      console.log(
+        "📝 Enriched context:",
+        JSON.stringify(enrichedContents, null, 2)
+      );
 
       const contextMessages = latestMessages.map((msg, idx) => ({
         role:
