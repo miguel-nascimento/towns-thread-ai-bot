@@ -156,7 +156,7 @@ export const createThreadFromFirstMessage = async (threadId: string) => {
     if (firstMessage.threadId === firstMessage.eventId) {
       await db
         .update(messages)
-        .set({ threadId })
+        .set({ threadId, isThreadStarter: true })
         .where(eq(messages.eventId, firstMessage.eventId));
     }
   } catch (error) {
