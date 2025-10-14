@@ -1,6 +1,6 @@
-import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
-import { makeTownsBot, type Bot } from "@towns-protocol/bot";
+import { makeTownsBot } from "@towns-protocol/bot";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import commands from "./commands.js";
@@ -13,13 +13,12 @@ import {
   type Context,
 } from "./db.js";
 
-const openrouter = createOpenAI({
+const openrouter = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY!,
-  baseURL: "https://openrouter.ai/api/v1",
 });
 
 const bot = await makeTownsBot(
-  process.env.APP_PRIVATE_DATA_BASE64!,
+  process.env.APP_PRIVATE_DATA!,
   process.env.JWT_SECRET!,
   { commands }
 );
