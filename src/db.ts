@@ -170,17 +170,54 @@ export const createThreadFromFirstMessage = async (threadId: string) => {
 
 export const getLatestChannelMessages = async (
   channelId: string,
-  limit: number = 10
+  topLevelLimit: number = 8,
+  perThreadLimit: number = 15
 ) => {
   try {
-    const result = await db
+    const topLevel = await db
       .select()
       .from(messages)
-      .where(eq(messages.channelId, channelId))
+      .where(
+        and(
+          eq(messages.channelId, channelId),
+          eq(messages.isThreadStarter, true)
+        )
+      )
       .orderBy(desc(messages.createdAt))
-      .limit(limit);
+      .limit(topLevelLimit);
 
-    return result.reverse();
+    if (topLevel.length === 0) {
+      return [];
+    }
+
+    const threadIds = topLevel.map((m) => m.threadId);
+
+    const allMessages = await Promise.all(
+      threadIds.map(async (threadId) => {
+        const threadMessages = await db
+          .select()
+          .from(messages)
+          .where(
+            and(
+              eq(messages.channelId, channelId),
+              eq(messages.threadId, threadId)
+            )
+          )
+          .orderBy(asc(messages.createdAt))
+          .limit(perThreadLimit);
+
+        return threadMessages;
+      })
+    );
+
+    const flattened = allMessages.flat();
+    const uniqueMessages = Array.from(
+      new Map(flattened.map((m) => [m.eventId, m])).values()
+    );
+
+    return uniqueMessages.sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+    );
   } catch (error) {
     console.error("Failed to get latest channel messages:", {
       channelId,
