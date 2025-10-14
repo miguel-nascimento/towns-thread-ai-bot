@@ -1,8 +1,10 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
-import { makeTownsBot } from "@towns-protocol/bot";
+import { makeTownsBot, type Bot } from "@towns-protocol/bot";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
+import commands from "./commands.js";
+
 import {
   addMessage,
   getContext,
@@ -18,80 +20,138 @@ const openrouter = createOpenAI({
 
 const bot = await makeTownsBot(
   process.env.APP_PRIVATE_DATA_BASE64!,
-  process.env.JWT_SECRET!
+  process.env.JWT_SECRET!,
+  { commands }
 );
+
+const shortId = (id: string) => id.slice(0, 4) + ".." + id.slice(-4);
+
+const buildContextMessage = (context: Context, botId: string) => {
+  const systemPrompt = `Help users with their questions. Be concise. Context: ${context.initialPrompt}`;
+
+  const messages = context.conversation.map((turn) => ({
+    role: turn.userId === botId ? ("assistant" as const) : ("user" as const),
+    content: turn.message,
+  }));
+
+  return { systemPrompt, messages };
+};
+
+const ai = async (context: Context, botId: string) => {
+  try {
+    const { systemPrompt, messages } = buildContextMessage(context, botId);
+
+    const { text } = await generateText({
+      model: openrouter("deepseek/deepseek-chat-v3.1:free"),
+      system: systemPrompt,
+      messages,
+      temperature: 0,
+    });
+
+    return { ok: true, answer: text };
+  } catch (error) {
+    console.error("OpenRouter API error:", {
+      error: error instanceof Error ? error.message : String(error),
+      contextLength: context.conversation.length,
+    });
+    return { ok: false, answer: "" };
+  }
+};
+
+// TODO: export this in bot framework lol
+type BotHandler = Parameters<Parameters<typeof bot.onMessage>[0]>[0];
+
+const handleAIRequest = async (
+  handler: BotHandler,
+  params: {
+    message: string;
+    userId: string;
+    eventId: string;
+    channelId: string;
+    threadId?: string;
+  }
+) => {
+  const { message, userId, eventId, channelId, threadId } = params;
+
+  if (threadId) {
+    console.log(`📢 AI request in thread: user ${shortId(userId)}:`, message);
+
+    const exists = await threadExists(threadId);
+    if (!exists) {
+      console.log(`Creating thread ${threadId} from first message`);
+      await createThreadFromFirstMessage(threadId);
+    }
+
+    await addMessage(eventId, threadId, userId, message);
+
+    const context = await getContext(threadId);
+    if (!context) {
+      console.log("Could not retrieve context for thread");
+      return;
+    }
+
+    const { ok, answer } = await ai(context, bot.botId);
+    if (!ok) {
+      await handler.sendMessage(
+        channelId,
+        "⚠️ AI call failed. Please try again.",
+        { threadId }
+      );
+      return;
+    }
+
+    const { eventId: botEventId } = await handler.sendMessage(
+      channelId,
+      answer,
+      { threadId }
+    );
+    await addMessage(botEventId, threadId, bot.botId, answer);
+  } else {
+    console.log(
+      `📢 AI request (new thread): user ${shortId(userId)}:`,
+      message
+    );
+
+    const newThreadId = eventId;
+    await addMessage(eventId, newThreadId, userId, message, true);
+
+    const context = await getContext(newThreadId);
+    if (!context) {
+      console.log("Could not retrieve context for new thread");
+      return;
+    }
+
+    const { ok, answer } = await ai(context, bot.botId);
+    if (!ok) {
+      await handler.sendMessage(
+        channelId,
+        "⚠️ AI call failed. Please try again.",
+        { threadId: newThreadId }
+      );
+      return;
+    }
+
+    const { eventId: botEventId } = await handler.sendMessage(
+      channelId,
+      answer,
+      { threadId: newThreadId }
+    );
+    await addMessage(botEventId, newThreadId, bot.botId, answer);
+  }
+};
 
 bot.onMessage(
   async (h, { message, userId, eventId, channelId, isMentioned, threadId }) => {
     try {
-      if (isMentioned && threadId) {
-        console.log(
-          `📢 mentioned in thread: user ${shortId(userId)} mentioned bot:`,
-          message
-        );
-
-        const exists = await threadExists(threadId);
-        if (!exists) {
-          console.log(`Creating thread ${threadId} from first message`);
-          await createThreadFromFirstMessage(threadId);
-        }
-
-        await addMessage(eventId, threadId, userId, message);
-
-        const context = await getContext(threadId);
-        if (!context) {
-          console.log("Could not retrieve context for thread");
-          return;
-        }
-
-        const { ok, answer } = await ai(context, bot.botId);
-        if (!ok) {
-          await h.sendMessage(
-            channelId,
-            "⚠️ AI call failed. Please try again.",
-            {
-              threadId,
-            }
-          );
-          return;
-        }
-
-        const { eventId: botEventId } = await h.sendMessage(channelId, answer, {
+      if (isMentioned) {
+        await handleAIRequest(h, {
+          message,
+          userId,
+          eventId,
+          channelId,
           threadId,
         });
-        await addMessage(botEventId, threadId, bot.botId, answer);
-      } else if (isMentioned && !threadId) {
-        console.log(
-          `📢 mentioned outside thread: user ${shortId(userId)} mentioned bot:`,
-          message
-        );
-
-        const newThreadId = eventId;
-        await addMessage(eventId, newThreadId, userId, message, true);
-
-        const context = await getContext(newThreadId);
-        if (!context) {
-          console.log("Could not retrieve context for new thread");
-          return;
-        }
-
-        const { ok, answer } = await ai(context, bot.botId);
-        if (!ok) {
-          await h.sendMessage(
-            channelId,
-            "⚠️ AI call failed. Please try again.",
-            {
-              threadId: newThreadId,
-            }
-          );
-          return;
-        }
-
-        const { eventId: botEventId } = await h.sendMessage(channelId, answer, {
-          threadId: newThreadId,
-        });
-        await addMessage(botEventId, newThreadId, bot.botId, answer);
-      } else if (threadId && !isMentioned) {
+      } else if (threadId) {
         console.log(
           `🧵 thread message: user ${shortId(userId)} sent message:`,
           message
@@ -135,38 +195,47 @@ bot.onMessage(
   }
 );
 
-const buildContextMessage = (context: Context, botId: string) => {
-  const systemPrompt = `Help users with their questions. Be concise. Context: ${context.initialPrompt}`;
+bot.onSlashCommand(
+  "ask",
+  async (handler, { args, channelId, userId, eventId, threadId }) => {
+    try {
+      const question = args.join(" ");
 
-  const messages = context.conversation.map((turn) => ({
-    role: turn.userId === botId ? ("assistant" as const) : ("user" as const),
-    content: turn.message,
-  }));
+      if (!question) {
+        await handler.sendMessage(
+          channelId,
+          "Please provide a question. Usage: /ask <your question>"
+        );
+        return;
+      }
 
-  return { systemPrompt, messages };
-};
+      await handleAIRequest(handler, {
+        message: question,
+        userId,
+        eventId,
+        channelId,
+        threadId,
+      });
+    } catch (error) {
+      console.error("Error handling /ask command:", {
+        userId: shortId(userId),
+        eventId,
+        threadId,
+        error: error instanceof Error ? error.message : String(error),
+      });
 
-const ai = async (context: Context, botId: string) => {
-  try {
-    const { systemPrompt, messages } = buildContextMessage(context, botId);
-
-    const { text } = await generateText({
-      model: openrouter("deepseek/deepseek-chat-v3.1:free"),
-      system: systemPrompt,
-      messages,
-      temperature: 0,
-    });
-
-    return { ok: true, answer: text };
-  } catch (error) {
-    console.error("OpenRouter API error:", {
-      error: error instanceof Error ? error.message : String(error),
-      contextLength: context.conversation.length,
-    });
-    return { ok: false, answer: "" };
+      try {
+        await handler.sendMessage(
+          channelId,
+          "Oopsie, I can't find my magic hat that contains the answer for everything!",
+          threadId ? { threadId } : { threadId: eventId }
+        );
+      } catch (replyError) {
+        console.error("Failed to send error message:", replyError);
+      }
+    }
   }
-};
-const shortId = (id: string) => id.slice(0, 4) + ".." + id.slice(-4);
+);
 
 const { jwtMiddleware, handler } = await bot.start();
 
