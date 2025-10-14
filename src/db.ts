@@ -16,19 +16,31 @@ const client = createClient({
 
 const db = drizzle(client);
 
-export const addMessage = async (
-  eventId: string,
-  threadId: string,
-  channelId: string,
-  spaceId: string,
-  userId: string,
-  message: string,
-  createdAt: Date,
-  replyId?: string,
-  isMentioned?: boolean,
-  mentions?: Array<{ userId: string; displayName: string }>,
-  isThreadStarter = false
-) => {
+export const saveMessage = async ({
+  eventId,
+  threadId,
+  channelId,
+  spaceId,
+  userId,
+  message,
+  createdAt,
+  replyId,
+  isMentioned,
+  mentions,
+  isThreadStarter = false,
+}: {
+  eventId: string;
+  threadId: string;
+  channelId: string;
+  spaceId: string;
+  userId: string;
+  message: string;
+  createdAt: Date;
+  replyId?: string;
+  isMentioned?: boolean;
+  mentions?: Array<{ userId: string; displayName: string }>;
+  isThreadStarter?: boolean;
+}) => {
   try {
     await db.insert(messages).values({
       eventId,
@@ -44,7 +56,7 @@ export const addMessage = async (
       createdAt,
     });
   } catch (error) {
-    console.error("Failed to add message:", {
+    console.error("Failed to save message:", {
       eventId,
       threadId,
       channelId,

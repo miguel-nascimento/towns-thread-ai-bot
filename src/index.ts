@@ -6,7 +6,7 @@ import { logger } from "hono/logger";
 import commands from "./commands.js";
 
 import {
-  addMessage,
+  saveMessage,
   getContext,
   threadExists,
   createThreadFromFirstMessage,
@@ -95,7 +95,7 @@ const handleAIRequest = async (
       await createThreadFromFirstMessage(threadId);
     }
 
-    await addMessage(
+    await saveMessage({
       eventId,
       threadId,
       channelId,
@@ -105,8 +105,8 @@ const handleAIRequest = async (
       createdAt,
       replyId,
       isMentioned,
-      mentions
-    );
+      mentions,
+    });
 
     const context = await getContext(threadId);
     if (!context) {
@@ -129,19 +129,16 @@ const handleAIRequest = async (
       answer,
       { threadId }
     );
-    await addMessage(
-      botEventId,
+    await saveMessage({
+      eventId: botEventId,
       threadId,
       channelId,
       spaceId,
-      bot.botId,
-      answer,
-      new Date(),
-      undefined,
-      false,
-      undefined,
-      false
-    );
+      userId: bot.botId,
+      message: answer,
+      createdAt: new Date(),
+      isThreadStarter: false,
+    });
   } else {
     console.log(
       `📢 AI request (new thread): user ${shortId(userId)}:`,
@@ -149,9 +146,9 @@ const handleAIRequest = async (
     );
 
     const newThreadId = eventId;
-    await addMessage(
+    await saveMessage({
       eventId,
-      newThreadId,
+      threadId: newThreadId,
       channelId,
       spaceId,
       userId,
@@ -160,8 +157,8 @@ const handleAIRequest = async (
       replyId,
       isMentioned,
       mentions,
-      true
-    );
+      isThreadStarter: true,
+    });
 
     const context = await getContext(newThreadId);
     if (!context) {
@@ -184,19 +181,16 @@ const handleAIRequest = async (
       answer,
       { threadId: newThreadId }
     );
-    await addMessage(
-      botEventId,
-      newThreadId,
+    await saveMessage({
+      eventId: botEventId,
+      threadId: newThreadId,
       channelId,
       spaceId,
-      bot.botId,
-      answer,
-      new Date(),
-      undefined,
-      false,
-      undefined,
-      false
-    );
+      userId: bot.botId,
+      message: answer,
+      createdAt: new Date(),
+      isThreadStarter: false,
+    });
   }
 };
 
@@ -242,7 +236,7 @@ bot.onMessage(
           await createThreadFromFirstMessage(threadId);
         }
 
-        await addMessage(
+        await saveMessage({
           eventId,
           threadId,
           channelId,
@@ -252,16 +246,16 @@ bot.onMessage(
           createdAt,
           replyId,
           isMentioned,
-          mentions
-        );
+          mentions,
+        });
       } else {
         console.log(
           `💬 standalone message: user ${shortId(userId)} sent message:`,
           message
         );
-        await addMessage(
+        await saveMessage({
           eventId,
-          eventId,
+          threadId: eventId,
           channelId,
           spaceId,
           userId,
@@ -270,8 +264,8 @@ bot.onMessage(
           replyId,
           isMentioned,
           mentions,
-          true
-        );
+          isThreadStarter: true,
+        });
       }
     } catch (error) {
       console.error("Error handling message:", {
@@ -346,7 +340,7 @@ bot.onSlashCommand(
 
 bot.onSlashCommand(
   "chat",
-  async (handler, { args, channelId, userId, eventId }) => {
+  async (handler, { args, channelId, spaceId, userId, eventId, createdAt }) => {
     try {
       const question = args.join(" ");
 
@@ -360,6 +354,17 @@ bot.onSlashCommand(
       }
 
       console.log(`💬 /chat command: user ${shortId(userId)} asked:`, question);
+
+      await saveMessage({
+        eventId,
+        threadId: eventId,
+        channelId,
+        spaceId,
+        userId,
+        message: question,
+        createdAt,
+        isThreadStarter: true,
+      });
 
       const latestMessages = await getLatestChannelMessages(channelId, 10, 50);
       const enrichedContents = buildEnrichedContext(latestMessages);
@@ -388,7 +393,23 @@ bot.onSlashCommand(
         temperature: 0,
       });
 
-      await handler.sendMessage(channelId, text, { replyId: eventId });
+      const { eventId: botEventId } = await handler.sendMessage(
+        channelId,
+        text,
+        { replyId: eventId }
+      );
+
+      await saveMessage({
+        eventId: botEventId,
+        threadId: eventId,
+        channelId,
+        spaceId,
+        userId: bot.botId,
+        message: text,
+        createdAt: new Date(),
+        replyId: eventId,
+        isThreadStarter: false,
+      });
 
       console.log(`✅ /chat response sent to user ${shortId(userId)}`);
     } catch (error) {
