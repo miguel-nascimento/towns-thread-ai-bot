@@ -19,5 +19,22 @@ export const messages = sqliteTable("messages", {
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
+export const pendingToolcalls = sqliteTable("pending_toolcalls", {
+  id: text("id").primaryKey(),
+  draftEventId: text("draft_event_id")
+    .notNull()
+    .references(() => messages.eventId),
+  originalEventId: text("original_event_id")
+    .notNull()
+    .references(() => messages.eventId),
+  toolName: text("tool_name").notNull(),
+  toolArgs: text("tool_args", { mode: "json" }).notNull(),
+  status: text("status")
+    .$type<"pending" | "approved" | "rejected">()
+    .default("pending"),
+});
+
 export type Message = typeof messages.$inferSelect;
 export type NewMessage = typeof messages.$inferInsert;
+export type PendingToolcall = typeof pendingToolcalls.$inferSelect;
+export type NewPendingToolcall = typeof pendingToolcalls.$inferInsert;

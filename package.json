@@ -20,9 +20,12 @@
     "@libsql/client": "^0.15.15",
     "@openrouter/ai-sdk-provider": "^1.2.0",
     "@towns-protocol/bot": "^0.0.368",
+    "@towns-protocol/sdk": "^0.0.368",
+    "@towns-protocol/web3": "^0.0.368",
     "ai": "^5.0.71",
     "drizzle-orm": "^0.44.6",
-    "hono": "^4.9.12"
+    "hono": "^4.9.12",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.46.1",

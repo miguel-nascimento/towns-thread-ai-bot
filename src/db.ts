@@ -1,6 +1,6 @@
 import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
-import { messages } from "./schema.js";
+import { messages, pendingToolcalls } from "./schema.js";
 import { eq, asc, and, desc } from "drizzle-orm";
 
 export type Context = {
@@ -318,4 +318,96 @@ export const isAskThread = async (threadId: string): Promise<boolean> => {
     });
     return false;
   }
+};
+
+export const savePendingToolcall = async ({
+  id,
+  draftEventId,
+  originalEventId,
+  toolName,
+  toolArgs,
+}: {
+  id: string;
+  draftEventId: string;
+  originalEventId: string;
+  toolName: string;
+  toolArgs: unknown;
+}) => {
+  try {
+    await db.insert(pendingToolcalls).values({
+      id,
+      draftEventId,
+      originalEventId,
+      toolName,
+      toolArgs: JSON.stringify(toolArgs),
+      status: "pending",
+    });
+  } catch (error) {
+    console.error("Failed to save pending toolcall:", {
+      id,
+      draftEventId,
+      originalEventId,
+      toolName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+};
+
+export const getPendingToolcallWithContext = async (draftEventId: string) => {
+  try {
+    const result = await db
+      .select({
+        id: pendingToolcalls.id,
+        draftEventId: pendingToolcalls.draftEventId,
+        originalEventId: pendingToolcalls.originalEventId,
+        toolName: pendingToolcalls.toolName,
+        toolArgs: pendingToolcalls.toolArgs,
+        status: pendingToolcalls.status,
+        channelId: messages.channelId,
+        spaceId: messages.spaceId,
+        userId: messages.userId,
+        threadId: messages.threadId,
+      })
+      .from(pendingToolcalls)
+      .innerJoin(
+        messages,
+        eq(pendingToolcalls.originalEventId, messages.eventId)
+      )
+      .where(eq(pendingToolcalls.draftEventId, draftEventId))
+      .limit(1);
+
+    return result.length > 0 ? result[0] : null;
+  } catch (error) {
+    console.error("Failed to get pending toolcall with context:", {
+      draftEventId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+};
+
+export const updateToolcallStatus = async (
+  id: string,
+  status: "approved" | "rejected"
+) => {
+  try {
+    await db
+      .update(pendingToolcalls)
+      .set({ status })
+      .where(eq(pendingToolcalls.id, id));
+  } catch (error) {
+    console.error("Failed to update toolcall status:", {
+      id,
+      status,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+};
+
+export const extractUrls = (text: string): string[] => {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const matches = text.match(urlRegex);
+  return matches || [];
 };

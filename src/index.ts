@@ -1,9 +1,10 @@
-import { generateText } from "ai";
+import { generateText, type ToolContent } from "ai";
 import { openai } from "@ai-sdk/openai";
-import { makeTownsBot } from "@towns-protocol/bot";
+import { makeTownsBot, type Bot } from "@towns-protocol/bot";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import commands from "./commands.js";
+import { createAgent } from "./agent/index.js";
 
 import {
   saveMessage,
@@ -13,6 +14,9 @@ import {
   getLatestChannelMessages,
   buildEnrichedContext,
   isAskThread,
+  extractUrls,
+  getPendingToolcallWithContext,
+  updateToolcallStatus,
   type Context,
 } from "./db.js";
 
@@ -25,35 +29,12 @@ const bot = await makeTownsBot(
 const shortId = (id: string) => id.slice(0, 4) + ".." + id.slice(-4);
 
 const buildContextMessage = (context: Context, botId: string) => {
-  const systemPrompt = `Help users with their questions. Be concise. Context: ${context.initialPrompt}`;
-
   const messages = context.conversation.map((turn) => ({
     role: turn.userId === botId ? ("assistant" as const) : ("user" as const),
     content: turn.message,
   }));
 
-  return { systemPrompt, messages };
-};
-
-const ai = async (context: Context, botId: string) => {
-  try {
-    const { systemPrompt, messages } = buildContextMessage(context, botId);
-
-    const { text } = await generateText({
-      model: openai("gpt-5-nano"),
-      system: systemPrompt,
-      messages,
-      temperature: 0,
-    });
-
-    return { ok: true, answer: text };
-  } catch (error) {
-    console.error("OpenRouter API error:", {
-      error: error instanceof Error ? error.message : String(error),
-      contextLength: context.conversation.length,
-    });
-    return { ok: false, answer: "" };
-  }
+  return messages;
 };
 
 bot.onMessage(
@@ -98,31 +79,58 @@ bot.onMessage(
           return;
         }
 
-        const { ok, answer } = await ai(context, bot.botId);
-        if (!ok) {
+        const urls = extractUrls(message);
+        const urlContext =
+          urls.length > 0
+            ? `\n\nNote: User shared URLs: ${urls.join(", ")}`
+            : "";
+
+        const agent = createAgent(bot, h, {
+          eventId,
+          channelId,
+          spaceId,
+          userId,
+          threadId,
+        });
+
+        const messages = buildContextMessage(context, bot.botId);
+        const systemPrompt = `Help users with their questions. Be concise. Context: ${context.initialPrompt}${urlContext}`;
+
+        try {
+          const result = await agent.generate({
+            messages,
+            system: systemPrompt,
+          });
+
+          const answer = result.text;
+
+          const { eventId: botEventId } = await h.sendMessage(
+            channelId,
+            answer,
+            {
+              threadId,
+            }
+          );
+
+          await saveMessage({
+            eventId: botEventId,
+            threadId,
+            channelId,
+            spaceId,
+            userId: bot.botId,
+            message: answer,
+            createdAt: new Date(),
+          });
+
+          console.log(`✅ /ask thread response sent`);
+        } catch (error) {
+          console.error("Agent error:", error);
           await h.sendMessage(
             channelId,
             "⚠️ AI call failed. Please try again.",
             { threadId }
           );
-          return;
         }
-
-        const { eventId: botEventId } = await h.sendMessage(channelId, answer, {
-          threadId,
-        });
-
-        await saveMessage({
-          eventId: botEventId,
-          threadId,
-          channelId,
-          spaceId,
-          userId: bot.botId,
-          message: answer,
-          createdAt: new Date(),
-        });
-
-        console.log(`✅ /ask thread response sent`);
       } else if (isMentioned) {
         console.log(`💬 Mention: user ${shortId(userId)} asked:`, message);
 
@@ -161,36 +169,67 @@ bot.onMessage(
           JSON.stringify(enrichedContents, null, 2)
         );
 
-        const { text } = await generateText({
-          model: openai("gpt-5-nano"),
-          system:
-            "Help users with their questions based on the recent channel conversation context. Be concise and helpful. Context includes reply chains and mentions in XML tags.",
-          messages: [
-            {
-              role: "user" as const,
-              content: `<context>\n${enrichedContents.join(
-                "\n"
-              )}\n</context>\n\n${message}`,
-            },
-          ],
-          temperature: 0,
-        });
+        const urls = extractUrls(message);
+        const urlContext =
+          urls.length > 0 ? `\nNote: User shared URLs: ${urls.join(", ")}` : "";
 
-        const { eventId: botEventId } = await h.sendMessage(channelId, text);
-
-        await saveMessage({
-          eventId: botEventId,
-          threadId: eventId,
+        // TODO: need to fix Bot class type
+        const agent = createAgent(bot as unknown as Bot, h, {
+          eventId,
           channelId,
           spaceId,
-          userId: bot.botId,
-          message: text,
-          createdAt: new Date(),
-          replyId: eventId,
-          isThreadStarter: false,
+          userId,
+          threadId: eventId,
         });
 
-        console.log(`✅ Mention response sent to user ${shortId(userId)}`);
+        // Send thinking message (top-level message)
+        const { eventId: thinkingMessageId } = await h.sendMessage(
+          channelId,
+          "🌀 Thinking... 🤔💭"
+        );
+
+        try {
+          const result = await agent.generate({
+            system: `Help users with their questions based on the recent channel conversation context. Be concise and helpful. Context includes reply chains and mentions in XML tags.${urlContext}`,
+            messages: [
+              {
+                role: "user" as const,
+                content: `<context>\n${enrichedContents.join(
+                  "\n"
+                )}\n</context>\n\n${message}`,
+              },
+            ],
+          });
+
+          const text = result.text;
+
+          const { eventId: botEventId } = await h.sendMessage(channelId, text);
+
+          await saveMessage({
+            eventId: botEventId,
+            threadId: eventId,
+            channelId,
+            spaceId,
+            userId: bot.botId,
+            message: text,
+            createdAt: new Date(),
+            replyId: eventId,
+            isThreadStarter: false,
+          });
+
+          // Delete thinking message
+          await h.removeEvent(channelId, thinkingMessageId);
+
+          console.log(`✅ Mention response sent to user ${shortId(userId)}`);
+        } catch (error) {
+          console.error("Agent error:", error);
+          // Delete thinking message on error too
+          await h.removeEvent(channelId, thinkingMessageId);
+          await h.sendMessage(
+            channelId,
+            "⚠️ Failed to process your question. Please try again."
+          );
+        }
       } else if (threadId) {
         console.log(
           `🧵 thread message: user ${shortId(userId)} sent message:`,
@@ -293,35 +332,68 @@ bot.onSlashCommand(
         return;
       }
 
-      const { ok, answer } = await ai(context, bot.botId);
-      if (!ok) {
+      const urls = extractUrls(question);
+      const urlContext =
+        urls.length > 0 ? `\n\nNote: User shared URLs: ${urls.join(", ")}` : "";
+
+      const agent = createAgent(bot as unknown as Bot, handler, {
+        eventId,
+        channelId,
+        spaceId,
+        userId,
+        threadId: newThreadId,
+      });
+
+      const messages = buildContextMessage(context, bot.botId);
+      const systemPrompt = `Help users with their questions. Be concise. Context: ${context.initialPrompt}${urlContext}`;
+
+      // Send thinking message (top-level message)
+      const { eventId: thinkingMessageId } = await handler.sendMessage(
+        channelId,
+        "🌀 Thinking... 🤔💭",
+        { threadId: newThreadId }
+      );
+
+      try {
+        const result = await agent.generate({
+          messages,
+          system: systemPrompt,
+        });
+
+        const answer = result.text;
+
+        const { eventId: botEventId } = await handler.sendMessage(
+          channelId,
+          answer,
+          { threadId: newThreadId }
+        );
+
+        await saveMessage({
+          eventId: botEventId,
+          threadId: newThreadId,
+          channelId,
+          spaceId,
+          userId: bot.botId,
+          message: answer,
+          createdAt: new Date(),
+        });
+
+        // Delete thinking message
+        await handler.removeEvent(channelId, thinkingMessageId);
+
+        console.log(
+          `✅ /ask thread created and response sent to user ${shortId(userId)}`
+        );
+      } catch (agentError) {
+        console.error("Agent error:", agentError);
+        // Delete thinking message on error too
+        await handler.removeEvent(channelId, thinkingMessageId);
         await handler.sendMessage(
           channelId,
           "⚠️ AI call failed. Please try again.",
           { threadId: newThreadId }
         );
-        return;
       }
-
-      const { eventId: botEventId } = await handler.sendMessage(
-        channelId,
-        answer,
-        { threadId: newThreadId }
-      );
-
-      await saveMessage({
-        eventId: botEventId,
-        threadId: newThreadId,
-        channelId,
-        spaceId,
-        userId: bot.botId,
-        message: answer,
-        createdAt: new Date(),
-      });
-
-      console.log(
-        `✅ /ask thread created and response sent to user ${shortId(userId)}`
-      );
     } catch (error) {
       console.error("Error handling /ask command:", {
         userId: shortId(userId),
@@ -354,6 +426,84 @@ bot.onSlashCommand(
     );
   }
 );
+
+bot.onReaction(async (handler, event) => {
+  try {
+    if (event.reaction !== "✅" && event.reaction !== "❌") {
+      return;
+    }
+
+    const pendingToolcall = await getPendingToolcallWithContext(
+      event.messageId
+    );
+
+    if (!pendingToolcall) {
+      return;
+    }
+
+    if (event.userId !== pendingToolcall.userId) {
+      console.log(
+        `User ${shortId(
+          event.userId
+        )} tried to approve/reject toolcall from ${shortId(
+          pendingToolcall.userId
+        )}`
+      );
+      return;
+    }
+
+    if (event.reaction === "✅") {
+      await updateToolcallStatus(pendingToolcall.id, "approved");
+
+      if (pendingToolcall.toolName === "sendMessageToChannel") {
+        const toolArgs = JSON.parse(pendingToolcall.toolArgs as string) as {
+          targetChannelId: string;
+          message: string;
+        };
+
+        try {
+          await bot.sendMessage(toolArgs.targetChannelId, toolArgs.message);
+
+          await handler.sendMessage(
+            pendingToolcall.channelId,
+            "✅ Message sent successfully!",
+            { threadId: pendingToolcall.threadId }
+          );
+
+          console.log(
+            `✅ Approved and sent message to channel ${shortId(
+              toolArgs.targetChannelId
+            )}`
+          );
+        } catch (error) {
+          console.error("Error sending approved message:", error);
+          await handler.sendMessage(
+            pendingToolcall.channelId,
+            "❌ Failed to send message. Please check the channel ID and permissions.",
+            { threadId: pendingToolcall.threadId }
+          );
+        }
+      }
+    } else if (event.reaction === "❌") {
+      await updateToolcallStatus(pendingToolcall.id, "rejected");
+
+      await handler.sendMessage(
+        pendingToolcall.channelId,
+        "❌ Action cancelled",
+        { threadId: pendingToolcall.threadId }
+      );
+
+      console.log(`❌ User rejected toolcall ${pendingToolcall.id}`);
+    }
+  } catch (error) {
+    console.error("Error handling reaction:", {
+      messageId: event.messageId,
+      reaction: event.reaction,
+      userId: shortId(event.userId),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
 
 const { jwtMiddleware, handler } = await bot.start();
 
