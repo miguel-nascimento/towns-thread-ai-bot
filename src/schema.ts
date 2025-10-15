@@ -15,6 +15,7 @@ export const messages = sqliteTable("messages", {
   isThreadStarter: integer("is_thread_starter", { mode: "boolean" }).default(
     false
   ),
+  isAskThread: integer("is_ask_thread", { mode: "boolean" }).default(false),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 

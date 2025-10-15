@@ -9,10 +9,6 @@ const commands = [
     name: "help",
     description: "Show help",
   },
-  {
-    name: "chat",
-    description: "Chat with the bot in channel",
-  },
 ] as const satisfies PlainMessage<SlashCommand>[];
 
 export default commands;

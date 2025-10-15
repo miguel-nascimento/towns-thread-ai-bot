@@ -1,4 +1,4 @@
-import { generateText, type ModelMessage } from "ai";
+import { generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { makeTownsBot } from "@towns-protocol/bot";
 import { Hono } from "hono";
@@ -12,6 +12,7 @@ import {
   createThreadFromFirstMessage,
   getLatestChannelMessages,
   buildEnrichedContext,
+  isAskThread,
   type Context,
 } from "./db.js";
 
@@ -29,7 +30,7 @@ const buildContextMessage = (context: Context, botId: string) => {
   const messages = context.conversation.map((turn) => ({
     role: turn.userId === botId ? ("assistant" as const) : ("user" as const),
     content: turn.message,
-  })) satisfies ModelMessage[];
+  }));
 
   return { systemPrompt, messages };
 };
@@ -55,145 +56,6 @@ const ai = async (context: Context, botId: string) => {
   }
 };
 
-// TODO: export this in bot framework lol
-type BotHandler = Parameters<Parameters<typeof bot.onMessage>[0]>[0];
-
-const handleAIRequest = async (
-  handler: BotHandler,
-  params: {
-    message: string;
-    userId: string;
-    eventId: string;
-    channelId: string;
-    spaceId: string;
-    createdAt: Date;
-    threadId?: string;
-    replyId?: string;
-    isMentioned?: boolean;
-    mentions?: Array<{ userId: string; displayName: string }>;
-  }
-) => {
-  const {
-    message,
-    userId,
-    eventId,
-    channelId,
-    spaceId,
-    createdAt,
-    threadId,
-    replyId,
-    isMentioned,
-    mentions,
-  } = params;
-
-  if (threadId) {
-    console.log(`📢 AI request in thread: user ${shortId(userId)}:`, message);
-
-    const exists = await threadExists(threadId);
-    if (!exists) {
-      console.log(`Creating thread ${threadId} from first message`);
-      await createThreadFromFirstMessage(threadId);
-    }
-
-    await saveMessage({
-      eventId,
-      threadId,
-      channelId,
-      spaceId,
-      userId,
-      message,
-      createdAt,
-      replyId,
-      isMentioned,
-      mentions,
-    });
-
-    const context = await getContext(threadId);
-    if (!context) {
-      console.log("Could not retrieve context for thread");
-      return;
-    }
-
-    const { ok, answer } = await ai(context, bot.botId);
-    if (!ok) {
-      await handler.sendMessage(
-        channelId,
-        "⚠️ AI call failed. Please try again.",
-        { threadId }
-      );
-      return;
-    }
-
-    const { eventId: botEventId } = await handler.sendMessage(
-      channelId,
-      answer,
-      { threadId }
-    );
-    await saveMessage({
-      eventId: botEventId,
-      threadId,
-      channelId,
-      spaceId,
-      userId: bot.botId,
-      message: answer,
-      createdAt: new Date(),
-      isThreadStarter: false,
-    });
-  } else {
-    console.log(
-      `📢 AI request (new thread): user ${shortId(userId)}:`,
-      message
-    );
-
-    const newThreadId = eventId;
-    await saveMessage({
-      eventId,
-      threadId: newThreadId,
-      channelId,
-      spaceId,
-      userId,
-      message,
-      createdAt,
-      replyId,
-      isMentioned,
-      mentions,
-      isThreadStarter: true,
-    });
-
-    const context = await getContext(newThreadId);
-    if (!context) {
-      console.log("Could not retrieve context for new thread");
-      return;
-    }
-
-    const { ok, answer } = await ai(context, bot.botId);
-    if (!ok) {
-      await handler.sendMessage(
-        channelId,
-        "⚠️ AI call failed. Please try again.",
-        { threadId: newThreadId }
-      );
-      return;
-    }
-
-    const { eventId: botEventId } = await handler.sendMessage(
-      channelId,
-      answer,
-      { threadId: newThreadId }
-    );
-    await saveMessage({
-      eventId: botEventId,
-      threadId: newThreadId,
-      channelId,
-      spaceId,
-      userId: bot.botId,
-      message: answer,
-      createdAt: new Date(),
-      isThreadStarter: false,
-    });
-  }
-};
-
 bot.onMessage(
   async (
     h,
@@ -211,19 +73,124 @@ bot.onMessage(
     }
   ) => {
     try {
-      if (isMentioned) {
-        await handleAIRequest(h, {
-          message,
-          userId,
+      if (threadId && (await isAskThread(threadId))) {
+        console.log(
+          `🧵 /ask thread message: user ${shortId(userId)} sent:`,
+          message
+        );
+
+        await saveMessage({
           eventId,
+          threadId,
           channelId,
           spaceId,
+          userId,
+          message,
           createdAt,
-          threadId,
           replyId,
           isMentioned,
           mentions,
         });
+
+        const context = await getContext(threadId);
+        if (!context) {
+          console.log("Could not retrieve context for thread");
+          return;
+        }
+
+        const { ok, answer } = await ai(context, bot.botId);
+        if (!ok) {
+          await h.sendMessage(
+            channelId,
+            "⚠️ AI call failed. Please try again.",
+            { threadId }
+          );
+          return;
+        }
+
+        const { eventId: botEventId } = await h.sendMessage(channelId, answer, {
+          threadId,
+        });
+
+        await saveMessage({
+          eventId: botEventId,
+          threadId,
+          channelId,
+          spaceId,
+          userId: bot.botId,
+          message: answer,
+          createdAt: new Date(),
+        });
+
+        console.log(`✅ /ask thread response sent`);
+      } else if (isMentioned) {
+        console.log(`💬 Mention: user ${shortId(userId)} asked:`, message);
+
+        await saveMessage({
+          eventId,
+          threadId: eventId,
+          channelId,
+          spaceId,
+          userId,
+          message,
+          createdAt,
+          isThreadStarter: true,
+          isMentioned,
+          mentions,
+        });
+
+        const latestMessages = await getLatestChannelMessages(
+          channelId,
+          10,
+          50
+        );
+        const enrichedContents = buildEnrichedContext(latestMessages);
+
+        console.log(
+          "📝 Retrieved messages:",
+          latestMessages.map((m) => ({
+            eventId: shortId(m.eventId),
+            userId: shortId(m.userId),
+            isBot: m.userId === bot.botId,
+            message: m.message.slice(0, 50),
+          }))
+        );
+
+        console.log(
+          "📝 Enriched context:",
+          JSON.stringify(enrichedContents, null, 2)
+        );
+
+        const { text } = await generateText({
+          model: openai("gpt-5-nano"),
+          system:
+            "Help users with their questions based on the recent channel conversation context. Be concise and helpful. Context includes reply chains and mentions in XML tags.",
+          messages: [
+            {
+              role: "user" as const,
+              content: `<context>\n${enrichedContents.join(
+                "\n"
+              )}\n</context>\n\n${message}`,
+            },
+          ],
+          temperature: 0,
+        });
+
+        const { eventId: botEventId } = await h.sendMessage(channelId, text);
+
+        await saveMessage({
+          eventId: botEventId,
+          threadId: eventId,
+          channelId,
+          spaceId,
+          userId: bot.botId,
+          message: text,
+          createdAt: new Date(),
+          replyId: eventId,
+          isThreadStarter: false,
+        });
+
+        console.log(`✅ Mention response sent to user ${shortId(userId)}`);
       } else if (threadId) {
         console.log(
           `🧵 thread message: user ${shortId(userId)} sent message:`,
@@ -280,8 +247,8 @@ bot.onMessage(
         try {
           await h.sendMessage(
             channelId,
-            "Oopsie, I can't find my magic hat that contains the answer for everything!",
-            threadId ? { threadId } : { threadId: eventId }
+            "⚠️ Failed to process your question. Please try again.",
+            { threadId }
           );
         } catch (replyError) {
           console.error("Failed to send error message:", replyError);
@@ -293,10 +260,7 @@ bot.onMessage(
 
 bot.onSlashCommand(
   "ask",
-  async (
-    handler,
-    { args, channelId, spaceId, userId, eventId, createdAt, threadId }
-  ) => {
+  async (handler, { args, channelId, spaceId, userId, eventId, createdAt }) => {
     try {
       const question = args.join(" ");
 
@@ -308,112 +272,58 @@ bot.onSlashCommand(
         return;
       }
 
-      await handleAIRequest(handler, {
-        message: question,
-        userId,
-        eventId,
-        channelId,
-        spaceId,
-        createdAt,
-        threadId,
-      });
-    } catch (error) {
-      console.error("Error handling /ask command:", {
-        userId: shortId(userId),
-        eventId,
-        threadId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      console.log(`💬 /ask command: user ${shortId(userId)} asked:`, question);
 
-      try {
-        await handler.sendMessage(
-          channelId,
-          "Oopsie, I can't find my magic hat that contains the answer for everything!",
-          threadId ? { threadId } : { threadId: eventId }
-        );
-      } catch (replyError) {
-        console.error("Failed to send error message:", replyError);
-      }
-    }
-  }
-);
-
-bot.onSlashCommand(
-  "chat",
-  async (handler, { args, channelId, spaceId, userId, eventId, createdAt }) => {
-    try {
-      const question = args.join(" ");
-
-      if (!question) {
-        await handler.sendMessage(
-          channelId,
-          "Please provide a question. Usage: /chat <your question>",
-          { replyId: eventId }
-        );
-        return;
-      }
-
-      console.log(`💬 /chat command: user ${shortId(userId)} asked:`, question);
-
+      const newThreadId = eventId;
       await saveMessage({
         eventId,
-        threadId: eventId,
+        threadId: newThreadId,
         channelId,
         spaceId,
         userId,
         message: question,
         createdAt,
         isThreadStarter: true,
+        isAskThread: true,
       });
 
-      const latestMessages = await getLatestChannelMessages(channelId, 10, 50);
-      const enrichedContents = buildEnrichedContext(latestMessages);
+      const context = await getContext(newThreadId);
+      if (!context) {
+        console.log("Could not retrieve context for new thread");
+        return;
+      }
 
-      console.log(
-        "📝 Enriched context:",
-        JSON.stringify(enrichedContents, null, 2)
-      );
-
-      const contextMessages = latestMessages.map((msg, idx) => ({
-        role:
-          msg.userId === bot.botId ? ("assistant" as const) : ("user" as const),
-        content: enrichedContents[idx],
-      })) satisfies ModelMessage[];
-
-      const userQuestion = {
-        role: "user" as const,
-        content: question,
-      };
-
-      const { text } = await generateText({
-        model: openai("gpt-5-nano"),
-        system:
-          "Help users with their questions based on the recent channel conversation context. Be concise and helpful. Context includes reply chains and mentions in [brackets].",
-        messages: [...contextMessages, userQuestion],
-        temperature: 0,
-      });
+      const { ok, answer } = await ai(context, bot.botId);
+      if (!ok) {
+        await handler.sendMessage(
+          channelId,
+          "⚠️ AI call failed. Please try again.",
+          { threadId: newThreadId }
+        );
+        return;
+      }
 
       const { eventId: botEventId } = await handler.sendMessage(
         channelId,
-        text,
-        { replyId: eventId }
+        answer,
+        { threadId: newThreadId }
       );
 
       await saveMessage({
         eventId: botEventId,
-        threadId: eventId,
+        threadId: newThreadId,
         channelId,
         spaceId,
         userId: bot.botId,
-        message: text,
+        message: answer,
         createdAt: new Date(),
-        replyId: eventId,
-        isThreadStarter: false,
       });
 
-      console.log(`✅ /chat response sent to user ${shortId(userId)}`);
+      console.log(
+        `✅ /ask thread created and response sent to user ${shortId(userId)}`
+      );
     } catch (error) {
-      console.error("Error handling /chat command:", {
+      console.error("Error handling /ask command:", {
         userId: shortId(userId),
         eventId,
         error: error instanceof Error ? error.message : String(error),
@@ -422,8 +332,7 @@ bot.onSlashCommand(
       try {
         await handler.sendMessage(
           channelId,
-          "⚠️ Failed to process your question. Please try again.",
-          { replyId: eventId }
+          "⚠️ Failed to process your question. Please try again."
         );
       } catch (replyError) {
         console.error("Failed to send error message:", replyError);

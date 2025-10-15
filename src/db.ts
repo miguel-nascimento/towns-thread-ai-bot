@@ -16,6 +16,8 @@ const client = createClient({
 
 const db = drizzle(client);
 
+const askThreadsSet = new Set<string>();
+
 export const saveMessage = async ({
   eventId,
   threadId,
@@ -28,6 +30,7 @@ export const saveMessage = async ({
   isMentioned,
   mentions,
   isThreadStarter = false,
+  isAskThread = false,
 }: {
   eventId: string;
   threadId: string;
@@ -40,6 +43,7 @@ export const saveMessage = async ({
   isMentioned?: boolean;
   mentions?: Array<{ userId: string; displayName: string }>;
   isThreadStarter?: boolean;
+  isAskThread?: boolean;
 }) => {
   try {
     await db.insert(messages).values({
@@ -53,8 +57,13 @@ export const saveMessage = async ({
       isMentioned,
       mentions,
       isThreadStarter,
+      isAskThread,
       createdAt,
     });
+
+    if (isAskThread && isThreadStarter) {
+      askThreadsSet.add(threadId);
+    }
   } catch (error) {
     console.error("Failed to save message:", {
       eventId,
@@ -248,19 +257,65 @@ export const buildEnrichedContext = (
   });
 
   return msgs.map((msg) => {
-    let enrichedContent = msg.message;
-
+    let replyXml = "";
     if (msg.replyId && replyLookup.has(msg.replyId)) {
-      enrichedContent = `[replying to: "${replyLookup
-        .get(msg.replyId)
-        ?.slice(0, 100)}..."] ${enrichedContent}`;
+      const replyMessage = replyLookup.get(msg.replyId)?.slice(0, 100) ?? "";
+      replyXml = `<reply>${escapeXml(replyMessage)}</reply>`;
     }
 
+    let mentionsXml = "";
     if (msg.mentions && msg.mentions.length > 0) {
-      const mentionList = msg.mentions.map((m) => m.displayName).join(", ");
-      enrichedContent = `[mentioned: ${mentionList}] ${enrichedContent}`;
+      const mentionList = msg.mentions
+        .map((m) => `<mention>${escapeXml(m.displayName)}</mention>`)
+        .join("");
+      mentionsXml = `<mentions>${mentionList}</mentions>`;
     }
 
-    return enrichedContent;
+    const messageXml = `<message>${escapeXml(msg.message)}</message>`;
+
+    return `<msg eventId="${escapeXml(
+      msg.eventId
+    )}">${replyXml}${mentionsXml}${messageXml}</msg>`;
   });
+};
+
+// Helper function to escape XML special characters
+function escapeXml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+export const isAskThread = async (threadId: string): Promise<boolean> => {
+  if (askThreadsSet.has(threadId)) return true;
+
+  try {
+    const result = await db
+      .select()
+      .from(messages)
+      .where(
+        and(
+          eq(messages.threadId, threadId),
+          eq(messages.isThreadStarter, true),
+          eq(messages.isAskThread, true)
+        )
+      )
+      .limit(1);
+
+    if (result.length > 0) {
+      askThreadsSet.add(threadId);
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    console.error("Failed to check if thread is ask thread:", {
+      threadId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
 };

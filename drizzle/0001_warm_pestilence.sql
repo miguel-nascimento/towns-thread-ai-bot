@@ -1,1 +1,0 @@
-ALTER TABLE `messages` ADD `channel_id` text NOT NULL;
